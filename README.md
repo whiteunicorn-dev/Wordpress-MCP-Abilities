@@ -1,6 +1,6 @@
 # WUA MCP ABILITIES
 
-This is a custom plugin built by White Unicorn Agency. This plugin is a library of tools to be used with AI tools such as Claude. These functions are registered on 'wp_abilities_api_init'.
+This is a custom plugin built by White Unicorn Agency. This plugin is a library of functions to be used with AI tools such as Claude. These functions are registered on 'wp_abilities_api_init'.
 
 ## REQUIREMENTS
 

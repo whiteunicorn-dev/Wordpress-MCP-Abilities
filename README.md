@@ -7,6 +7,7 @@ This is a custom plugin built by White Unicorn Agency. This plugin is a library 
 * The MCP Adapter plugin must be installed and active for this plugin to work
 * To use with Claude Desktop you must update file: claude_desktop_config.json - File->Settings->Developer->Edit Config
 * You may also have to install the Abilities API plugin
+* You will need to disable the Privacy Mode to connect to any AI tools.
 
 ## Resources
 

@@ -5,7 +5,7 @@
  * @package     wua-mcp-abilities
  * Plugin Name: WUA MCP Abilities
  * Description: Exposes abilities to AI via MCP
- * Version: 2.5
+ * Version: 2.6
  */
 
 # Table of Contents
@@ -43,6 +43,8 @@
 #       4.27  create-term              - Create a taxonomy term
 #       4.28  get-terms                - List terms for a taxonomy
 #       4.29  set-post-terms           - Assign terms to a post
+#       4.30  copy-post-meta           - Raw DB copy of meta from one post to another (safe for ACF flexible content / repeaters)
+#       4.31  update-post-meta-raw     - Write a single meta value directly via SQL (bypasses WP serialization)
 # ---------------------------------------------------------
 
 
@@ -423,9 +425,9 @@ add_action( 'wp_abilities_api_init', function() {
                     $sk = ! empty( $m['source_key'] ) ? sanitize_text_field( $m['source_key'] ) : null;
                     $sv = $m['static_value'] ?? null;
                     if ( ! empty( $m['skip_if_set'] ) && ! empty( get_post_meta( $post_id, $tk, true ) ) ) { $skipped++; continue; }
-                    if ( $sk )         { $value = trim( get_post_meta( $post_id, $sk, true ) ); }
+                    if ( $sk )             { $value = trim( get_post_meta( $post_id, $sk, true ) ); }
                     elseif ( $sv !== null ) { $value = $sv; }
-                    else               { $skipped++; continue; }
+                    else                   { $skipped++; continue; }
                     if ( $value === '' ) { $skipped++; continue; }
                     update_post_meta( $post_id, $tk, sanitize_text_field( $value ) );
                     $pr['changes'][] = [ 'key' => $tk, 'status' => 'updated' ];
@@ -595,14 +597,14 @@ add_action( 'wp_abilities_api_init', function() {
         'execute_callback' => function( $input ) {
             $t = wp_get_theme();
             return [
-                'name'         => get_bloginfo('name'),
-                'description'  => get_bloginfo('description'),
-                'url'          => get_bloginfo('url'),
-                'admin_email'  => get_bloginfo('admin_email'),
-                'wp_version'   => get_bloginfo('version'),
-                'language'     => get_bloginfo('language'),
-                'active_theme' => $t->get('Name'),
-                'theme_version'=> $t->get('Version'),
+                'name'          => get_bloginfo('name'),
+                'description'   => get_bloginfo('description'),
+                'url'           => get_bloginfo('url'),
+                'admin_email'   => get_bloginfo('admin_email'),
+                'wp_version'    => get_bloginfo('version'),
+                'language'      => get_bloginfo('language'),
+                'active_theme'  => $t->get('Name'),
+                'theme_version' => $t->get('Version'),
             ];
         },
         'permission_callback' => function() { return current_user_can( 'manage_options' ); },
@@ -673,12 +675,12 @@ add_action( 'wp_abilities_api_init', function() {
             if ( isset($input['public']) ) $args['public'] = (bool) $input['public'];
             $pts = get_post_types( $args, 'objects' );
             return array_values( array_map( fn($pt) => [
-                'name'        => $pt->name,
-                'label'       => $pt->label,
-                'public'      => $pt->public,
-                'hierarchical'=> $pt->hierarchical,
-                'has_archive' => $pt->has_archive,
-                'rest_base'   => $pt->rest_base ?? $pt->name,
+                'name'         => $pt->name,
+                'label'        => $pt->label,
+                'public'       => $pt->public,
+                'hierarchical' => $pt->hierarchical,
+                'has_archive'  => $pt->has_archive,
+                'rest_base'    => $pt->rest_base ?? $pt->name,
             ], $pts ) );
         },
         'permission_callback' => function() { return current_user_can( 'manage_options' ); },
@@ -878,9 +880,9 @@ add_action( 'wp_abilities_api_init', function() {
             $mime = get_post_mime_type($id);
             if ( $mime === 'image/svg+xml' ) return [ 'attachment_id' => $id, 'mime_type' => $mime, 'base64' => base64_encode(file_get_contents($fp)), 'note' => 'SVG' ];
             $img = null;
-            if ( $mime === 'image/jpeg' )      $img = @imagecreatefromjpeg($fp);
-            elseif ( $mime === 'image/png' )   $img = @imagecreatefrompng($fp);
-            elseif ( $mime === 'image/webp' )  $img = @imagecreatefromwebp($fp);
+            if ( $mime === 'image/jpeg' )     $img = @imagecreatefromjpeg($fp);
+            elseif ( $mime === 'image/png' )  $img = @imagecreatefrompng($fp);
+            elseif ( $mime === 'image/webp' ) $img = @imagecreatefromwebp($fp);
             if ( ! $img ) return new WP_Error('gd_failed', 'GD failed.');
             $ow = imagesx($img); $oh = imagesy($img);
             if ( $ow > $oh ) { $nw = min($ow, $max); $nh = (int) round($oh * $nw / $ow); }
@@ -1135,7 +1137,6 @@ add_action( 'wp_abilities_api_init', function() {
                 return new WP_Error( 'invalid_post', "Post {$post_id} not found." );
             }
 
-            // Resolve slugs to IDs if provided
             $term_ids = [];
             if ( ! empty( $input['term_ids'] ) ) {
                 $term_ids = array_map( 'intval', $input['term_ids'] );
@@ -1155,11 +1156,140 @@ add_action( 'wp_abilities_api_init', function() {
             if ( is_wp_error( $result ) ) return $result;
 
             return [
-                'updated'   => true,
-                'post_id'   => $post_id,
-                'taxonomy'  => $taxonomy,
-                'term_ids'  => $result,
-                'appended'  => $append,
+                'updated'  => true,
+                'post_id'  => $post_id,
+                'taxonomy' => $taxonomy,
+                'term_ids' => $result,
+                'appended' => $append,
+            ];
+        },
+        'permission_callback' => function() { return current_user_can( 'manage_options' ); },
+        'meta' => [ 'mcp' => [ 'public' => true, 'type' => 'tool' ] ],
+    ]);
+
+    // -------------------------------------------------------------------------
+    // 4.30 Copy Post Meta
+    // Raw DB copy — safe for ACF flexible content and repeater fields.
+    // -------------------------------------------------------------------------
+    wp_register_ability( 'wua-mcp-abilities/copy-post-meta', [
+        'label'       => 'Copy Post Meta',
+        'description' => 'Copy all post meta (including ACF flexible content and repeater fields) from one post to another using raw DB copy. Bypasses WordPress serialization to prevent double-serialization. Optionally filter to specific meta key prefixes.',
+        'category'    => 'wua-mcp-abilities',
+        'input_schema' => [
+            'type'       => 'object',
+            'properties' => [
+                'source_id'    => [ 'type' => 'integer', 'description' => 'Post ID to copy meta from.' ],
+                'dest_id'      => [ 'type' => 'integer', 'description' => 'Post ID to copy meta to.' ],
+                'key_prefixes' => [ 'type' => 'array', 'items' => [ 'type' => 'string' ], 'description' => 'Optional. Only copy meta keys starting with these prefixes (e.g. ["app_sections", "_app_sections"]). Omit to copy all meta.' ],
+                'overwrite'    => [ 'type' => 'boolean', 'description' => 'If true (default), overwrite existing meta on dest. If false, skip keys already set.' ],
+            ],
+            'required' => [ 'source_id', 'dest_id' ],
+        ],
+        'execute_callback' => function( $input ) {
+            global $wpdb;
+            $source_id    = (int) $input['source_id'];
+            $dest_id      = (int) $input['dest_id'];
+            $key_prefixes = ! empty( $input['key_prefixes'] ) ? (array) $input['key_prefixes'] : [];
+            $overwrite    = isset( $input['overwrite'] ) ? (bool) $input['overwrite'] : true;
+
+            $rows = $wpdb->get_results( $wpdb->prepare(
+                "SELECT meta_key, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d",
+                $source_id
+            ), ARRAY_A );
+
+            if ( empty( $rows ) ) return new WP_Error( 'no_meta', 'No meta found on source post.' );
+
+            $copied = []; $skipped = [];
+
+            foreach ( $rows as $row ) {
+                $key = $row['meta_key']; $val = $row['meta_value'];
+
+                if ( ! empty( $key_prefixes ) ) {
+                    $match = false;
+                    foreach ( $key_prefixes as $prefix ) {
+                        if ( strpos( $key, $prefix ) === 0 ) { $match = true; break; }
+                    }
+                    if ( ! $match ) { $skipped[] = $key; continue; }
+                }
+
+                $existing = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT meta_id FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s LIMIT 1",
+                    $dest_id, $key
+                ) );
+
+                if ( $existing ) {
+                    if ( ! $overwrite ) { $skipped[] = $key; continue; }
+                    $wpdb->query( $wpdb->prepare(
+                        "UPDATE {$wpdb->postmeta} SET meta_value = %s WHERE post_id = %d AND meta_key = %s",
+                        $val, $dest_id, $key
+                    ) );
+                } else {
+                    $wpdb->query( $wpdb->prepare(
+                        "INSERT INTO {$wpdb->postmeta} (post_id, meta_key, meta_value) VALUES (%d, %s, %s)",
+                        $dest_id, $key, $val
+                    ) );
+                }
+
+                $copied[] = $key;
+            }
+
+            return [
+                'source_id' => $source_id,
+                'dest_id'   => $dest_id,
+                'copied'    => count( $copied ),
+                'skipped'   => count( $skipped ),
+                'keys'      => $copied,
+            ];
+        },
+        'permission_callback' => function() { return current_user_can( 'manage_options' ); },
+        'meta' => [ 'mcp' => [ 'public' => true, 'type' => 'tool' ] ],
+    ]);
+
+    // -------------------------------------------------------------------------
+    // 4.31 Update Post Meta Raw
+    // Bypasses WP serialization — use for ACF flexible content fields.
+    // -------------------------------------------------------------------------
+    wp_register_ability( 'wua-mcp-abilities/update-post-meta-raw', [
+        'label'       => 'Update Post Meta Raw',
+        'description' => 'Write a meta value directly to the DB bypassing WordPress serialization. Use for ACF flexible content or repeater fields where the value is already a serialized PHP string (e.g. app_sections). Pass the value exactly as it should be stored in the database.',
+        'category'    => 'wua-mcp-abilities',
+        'input_schema' => [
+            'type'       => 'object',
+            'properties' => [
+                'post_id'    => [ 'type' => 'integer', 'description' => 'Post ID to update.' ],
+                'meta_key'   => [ 'type' => 'string',  'description' => 'The meta key to write.' ],
+                'meta_value' => [ 'type' => 'string',  'description' => 'The raw meta value. For ACF flexible content pass the serialized PHP string exactly as stored in the DB.' ],
+            ],
+            'required' => [ 'post_id', 'meta_key', 'meta_value' ],
+        ],
+        'execute_callback' => function( $input ) {
+            global $wpdb;
+            $post_id    = (int) $input['post_id'];
+            $meta_key   = sanitize_text_field( $input['meta_key'] );
+            $meta_value = $input['meta_value']; // intentionally not sanitized — raw value
+
+            $existing = $wpdb->get_var( $wpdb->prepare(
+                "SELECT meta_id FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s LIMIT 1",
+                $post_id, $meta_key
+            ) );
+
+            if ( $existing ) {
+                $result = $wpdb->query( $wpdb->prepare(
+                    "UPDATE {$wpdb->postmeta} SET meta_value = %s WHERE post_id = %d AND meta_key = %s",
+                    $meta_value, $post_id, $meta_key
+                ) );
+            } else {
+                $result = $wpdb->query( $wpdb->prepare(
+                    "INSERT INTO {$wpdb->postmeta} (post_id, meta_key, meta_value) VALUES (%d, %s, %s)",
+                    $post_id, $meta_key, $meta_value
+                ) );
+            }
+
+            return [
+                'updated'  => $result !== false,
+                'post_id'  => $post_id,
+                'meta_key' => $meta_key,
+                'action'   => $existing ? 'updated' : 'inserted',
             ];
         },
         'permission_callback' => function() { return current_user_can( 'manage_options' ); },
